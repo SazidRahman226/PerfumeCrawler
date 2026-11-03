@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Perfume Finder</title>
+<style>
+  :root {
+    --bg: #f7f5f2; --card: #ffffff; --ink: #1d1b19; --muted: #6f6a64; --line: #e6e1da;
+    --accent: #7a4b2a; --accent-ink: #ffffff;
+    --ok: #1f7a4a; --ok-bg: #e5f4ea; --bad: #a3322b; --bad-bg: #f9e7e5; --warn-bg: #fff4dc;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161412; --card: #201d1a; --ink: #f1ece6; --muted: #a39b92; --line: #35302b;
+      --accent: #d29a6b; --accent-ink: #1a1410;
+      --ok: #6fd39b; --ok-bg: #1c3427; --bad: #f08a80; --bad-bg: #3a201d; --warn-bg: #3a3020;
+      color-scheme: dark;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 32px 16px 64px; }
+  header h1 { margin: 0 0 4px; font-size: 1.8rem; letter-spacing: -0.02em; }
+  header p { margin: 0 0 20px; color: var(--muted); }
+  form { display: flex; gap: 8px; flex-wrap: wrap; }
+  input[type=search] { flex: 1 1 260px; padding: 12px 14px; font-size: 1rem; border-radius: 10px;
+         border: 1px solid var(--line); background: var(--card); color: var(--ink); }
+  input[type=search]:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  button { padding: 12px 22px; font-size: 1rem; font-weight: 600; border: 0; border-radius: 10px;
+           background: var(--accent); color: var(--accent-ink); cursor: pointer; }
+  button:disabled { opacity: .6; cursor: progress; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; color: var(--muted); font-size: .85rem; }
+  .chip { border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; background: var(--card); }
+  #summary { margin: 24px 0 12px; font-weight: 600; min-height: 1.5em; }
+  #results { display: grid; gap: 16px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 500px), 1fr)); }
+  .shop { background: var(--card); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+  .shop > h2 { margin: 0; padding: 12px 16px; font-size: 1rem; display: flex; justify-content: space-between;
+               align-items: center; gap: 8px; border-bottom: 1px solid var(--line); }
+  .shop > h2 a { color: inherit; text-decoration: none; }
+  .shop > h2 small { color: var(--muted); font-weight: 400; }
+  .empty { padding: 18px 16px; color: var(--muted); }
+  .empty.err { background: var(--warn-bg); color: var(--ink); }
+  .product { display: grid; grid-template-columns: 64px 1fr; gap: 12px; padding: 14px 16px; border-top: 1px solid var(--line); }
+  .product:first-of-type { border-top: 0; }
+  .product img, .product .noimg { width: 64px; height: 64px; object-fit: cover; border-radius: 8px; background: var(--line); }
+  .product .name { font-weight: 600; color: var(--ink); text-decoration: none; }
+  .product .name:hover { text-decoration: underline; }
+  .meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 4px; }
+  .price { font-weight: 700; font-size: 1.05rem; }
+  .was { color: var(--muted); text-decoration: line-through; font-size: .9rem; }
+  .badge { font-size: .75rem; font-weight: 700; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+  .in { background: var(--ok-bg); color: var(--ok); }
+  .out { background: var(--bad-bg); color: var(--bad); }
+  .tablewrap { overflow-x: auto; margin-top: 8px; }
+  table { border-collapse: collapse; width: 100%; font-size: .9rem; }
+  th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; }
+  td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  tr.na td { color: var(--muted); }
+  .muted { color: var(--muted); font-size: .85rem; }
+  .spinner { width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--line);
+             border-top-color: var(--accent); animation: spin .8s linear infinite; display: inline-block; vertical-align: middle; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Perfume Finder</h1>
+    <p>Search every shop in <code>links.md</code> at once: price, sizes and availability, live.</p>
+  </header>
+
+  <form id="form">
+    <input id="q" type="search" placeholder="e.g. Lattafa Khamrah, Hawas Ice, Bleu de Chanel" autocomplete="off" required minlength="2" autofocus>
+    <button id="go" type="submit">Search</button>
+  </form>
+  <div class="chips" id="shoplist"></div>
+
+  <div id="summary" aria-live="polite"></div>
+  <div id="results"></div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const money = (n, cur) => n == null ? "—" : (cur === "BDT" || !cur ? "৳" : cur + " ") + Number(n).toLocaleString("en-IN", {maximumFractionDigits: 2});
+const badge = ok => `<span class="badge ${ok ? "in" : "out"}">${ok ? "In stock" : "Unavailable"}</span>`;
+
+let shops = [];
+let runId = 0;
+
+async function loadShops() {
+  shops = await (await fetch("/api/shops")).json();
+  $("#shoplist").innerHTML = shops.length
+    ? "Searching: " + shops.map(s => `<span class="chip">${esc(s.shop)}</span>`).join("")
+    : "No shops found in links.md";
+}
+
+function productHtml(p) {
+  const img = p.image ? `<img src="${esc(p.image)}" alt="" loading="lazy">` : `<div class="noimg"></div>`;
+  let body;
+  if (p.variants.length) {
+    const rows = p.variants.map(v => `
+      <tr class="${v.available ? "" : "na"}">
+        <td>${esc(v.name)}</td>
+        <td class="num">${money(v.price, p.currency)}${v.regular_price ? ` <span class="was">${money(v.regular_price, p.currency)}</span>` : ""}</td>
+        <td>${badge(v.available)}${v.stock_text && v.available ? ` <span class="muted">${esc(v.stock_text)}</span>` : ""}</td>
+      </tr>`).join("");
+    const n = p.variants.filter(v => v.available).length;
+    body = `
+      <div class="meta">${badge(p.available)}
+        <span class="muted">${p.variants.length} size${p.variants.length > 1 ? "s" : ""}${p.available ? `, ${n} in stock` : ""}${p.price != null ? ` · from ${money(p.price, p.currency)}` : ""}</span>
+      </div>
+      <div class="tablewrap"><table>
+        <thead><tr><th>Size</th><th>Price</th><th>Status</th></tr></thead><tbody>${rows}</tbody>
+      </table></div>`;
+  } else {
+    body = `
+      <div class="meta">
+        ${p.price != null ? `<span class="price">${money(p.price, p.currency)}</span>` : `<span class="muted">No price listed</span>`}
+        ${p.regular_price ? `<span class="was">${money(p.regular_price, p.currency)}</span>` : ""}
+        ${badge(p.available)}
+        ${p.stock_text && p.available ? `<span class="muted">${esc(p.stock_text)}</span>` : ""}
+      </div>`;
+  }
+  return `<div class="product">${img}<div>
+      <a class="name" href="${esc(p.url)}" target="_blank" rel="noopener">${esc(p.name)}</a>${body}
+    </div></div>`;
+}
+
+function shopHtml(shop, data) {
+  const head = `<h2><a href="${esc(shop.site)}" target="_blank" rel="noopener">${esc(shop.shop)}</a>`;
+  if (!data) return `${head}<span class="spinner" aria-label="Loading"></span></h2>`;
+  if (data.error) return `${head}<small>error</small></h2><div class="empty err">Couldn't search this shop: ${esc(data.error)}</div>`;
+  const inStock = data.results.filter(p => p.available).length;
+  const meta = data.results.length ? `<small>${data.results.length} match${data.results.length > 1 ? "es" : ""} · ${inStock} in stock · ${data.seconds}s</small>` : `<small>${data.seconds}s</small>`;
+  const body = data.results.length
+    ? data.results.map(productHtml).join("")
+    : `<div class="empty">${badge(false)} Not found at this shop.</div>`;
+  return `${head}${meta}</h2>${body}`;
+}
+
+function updateSummary(done) {
+  const finished = done.filter(Boolean);
+  const avail = finished.filter(d => !d.error && d.results.some(p => p.available)).length;
+  const pending = shops.length - finished.length;
+  $("#summary").textContent = finished.length === 0 ? "Searching…"
+    : `In stock at ${avail} of ${finished.length} shop${finished.length > 1 ? "s" : ""}` + (pending ? ` (${pending} still searching…)` : "");
+}
+
+$("#form").addEventListener("submit", async e => {
+  e.preventDefault();
+  const q = $("#q").value.trim();
+  if (q.length < 2) return;
+  const id = ++runId;
+  $("#go").disabled = true;
+  const done = new Array(shops.length).fill(null);
+  $("#results").innerHTML = shops.map((s, i) => `<section class="shop" id="shop-${i}">${shopHtml(s)}</section>`).join("");
+  updateSummary(done);
+  await Promise.all(shops.map(async (s, i) => {
+    let data;
+    try {
+      const r = await fetch(`/api/search?site=${encodeURIComponent(s.site)}&q=${encodeURIComponent(q)}`);
+      data = r.ok ? await r.json() : { error: `Server error ${r.status}`, results: [] };
+    } catch (err) { data = { error: "Network error", results: [] }; }
+    if (id !== runId) return;   // a newer search started
+    done[i] = data;
+    $(`#shop-${i}`).innerHTML = shopHtml(s, data);
+    updateSummary(done);
+  }));
+  if (id === runId) $("#go").disabled = false;
+});
+
+loadShops();
+</script>
+</body>
+</html>

@@ -1,0 +1,6 @@
+- It should be a website
+- There will be an input option for the required perfume name
+- The scraper will scrap the links that i provided to search for the perfume
+- If available show price and quanitie/s(if multiple quanitiy present it will also handle that)
+- if not show unavailable
+- each website may function differently do your
