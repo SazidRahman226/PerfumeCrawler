@@ -68,8 +68,38 @@ def tokens(text: str) -> list[str]:
     return re.findall(r"[a-z0-9]+", html.unescape(text).lower())
 
 
+# Filler words people type that shops often leave out of product names.
+STOPWORDS = {"the", "a", "an", "of", "by", "for", "and", "&", "de", "la", "le", "les", "du", "di", "pour"}
+
+
+def key_tokens(query: str) -> list[str]:
+    """Query words that matter for matching (filler words dropped, unless nothing else is left)."""
+    t = tokens(query)
+    return [w for w in t if w not in STOPWORDS] or t
+
+
+def search_variants(query: str) -> list[str]:
+    """Search strings to send to a shop, most specific first.
+
+    Shop search engines usually require every word to appear, so an extra word such as
+    "the" hides the product. We also try the query without filler words, then the most
+    distinctive single words, and rank everything locally with match_score.
+    """
+    full = " ".join(tokens(query))
+    core = key_tokens(query)
+    out = [full, " ".join(core)]
+    if len(core) > 1:
+        out.append(" ".join(core[:2]))                         # usually brand + first name word
+        out += sorted((w for w in core if len(w) >= 4), key=len, reverse=True)[:2]
+    seen, uniq = set(), []
+    for q in out:
+        if q and q not in seen:
+            seen.add(q); uniq.append(q)
+    return uniq
+
+
 def match_score(query: str, name: str) -> float:
-    q = tokens(query)
+    q = key_tokens(query)
     if not q:
         return 0.0
     name_tokens = tokens(name)
@@ -136,10 +166,26 @@ class WooCommerceShop:
             return " / ".join(parts)
         return re.sub(r"[^:,]+:\s*", "", v.get("variation") or v.get("name") or "")
 
-    def search(self, query: str) -> list[dict]:
-        r = _session.get(self.api, params={"search": query, "per_page": 30}, timeout=TIMEOUT)
+    def _search_api(self, q: str) -> list[dict]:
+        r = _session.get(self.api, params={"search": q, "per_page": 30}, timeout=TIMEOUT)
         r.raise_for_status()
-        items = r.json()
+        return r.json()
+
+    def search(self, query: str) -> list[dict]:
+        # Try progressively looser searches; stop once a search finds a full match.
+        items, seen = [], set()
+        for i, q in enumerate(search_variants(query)):
+            try:
+                batch = self._search_api(q)
+            except requests.RequestException:
+                if i == 0:
+                    raise
+                continue
+            for p in batch:
+                if p.get("id") not in seen:
+                    seen.add(p.get("id")); items.append(p)
+            if any(match_score(query, html.unescape(p.get("name", ""))) == 1.0 for p in batch):
+                break
 
         results = []
         for p in items:
