@@ -14,3 +14,4 @@ and so is any URL inside an HTML comment.
 - https://onedropbd.com/
 - https://fragwavebd.com/
 - https://fragranticabangladesh.com/
+- https://perfumecenter.com.bd/
