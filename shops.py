@@ -4,6 +4,7 @@ Each shop listed in links.md is auto-detected the first time it is searched:
 
 * WooCommerce  - uses the public Store API (/wp-json/wc/store/v1/products?search=...)
                  and batch-fetches size variations in a single extra request.
+* Shopify      - storefront search/suggest.json plus /products/<handle>.js for sizes.
 * Softs.ai     - Next.js storefront (e.g. onedropbd.com). Its search API rejects
                  direct requests and robots.txt disallows search URLs, so we match the
                  query against the product slugs in sitemap.xml, then read the
@@ -320,6 +321,72 @@ class SoftsShop:
         return results
 
 
+# --------------------------------------------------------------------------- Shopify
+
+class ShopifyShop:
+    kind = "Shopify"
+
+    def __init__(self, base: str):
+        self.base = base
+
+    def _suggest(self, q: str) -> list[dict]:
+        r = _session.get(f"{self.base}/search/suggest.json", timeout=TIMEOUT, params={
+            "q": q, "resources[type]": "product", "resources[limit]": 10})
+        r.raise_for_status()
+        return ((r.json().get("resources") or {}).get("results") or {}).get("products") or []
+
+    def _product(self, handle: str) -> dict | None:
+        r = _session.get(f"{self.base}/products/{handle}.js", timeout=TIMEOUT)
+        return r.json() if r.ok else None
+
+    def search(self, query: str) -> list[dict]:
+        handles, seen = [], set()
+        for i, q in enumerate(search_variants(query)):
+            try:
+                batch = self._suggest(q)
+            except requests.RequestException:
+                if i == 0:
+                    raise
+                continue
+            for p in batch:
+                if p.get("handle") and p["handle"] not in seen:
+                    seen.add(p["handle"]); handles.append((p["handle"], html.unescape(p.get("title", ""))))
+            if any(match_score(query, t) == 1.0 for _, t in handles):
+                break
+        handles = [h for h, t in handles if keep(query, match_score(query, t))][:MAX_PAGE_FETCHES]
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            products = list(pool.map(self._product, handles))
+
+        results = []
+        for handle, p in zip(handles, products):
+            if not p:
+                continue
+            money = lambda c: (c / 100) if c else None  # .js prices are in cents
+            res = {
+                "name": html.unescape(p.get("title", "")),
+                "url": f"{self.base}/products/{handle}",
+                "image": ("https:" + p["featured_image"]) if str(p.get("featured_image", "")).startswith("//")
+                         else p.get("featured_image"),
+                "available": bool(p.get("available")),
+                "price": money(p.get("price")),
+                "regular_price": money(p.get("compare_at_price")),
+                "currency": "BDT",
+                "stock_text": None,
+                "variants": [],
+                "score": match_score(query, p.get("title", "")),
+            }
+            vs = p.get("variants") or []
+            if len(vs) > 1:
+                for v in vs:
+                    res["variants"].append({"name": v.get("title"), "price": money(v.get("price")),
+                                            "regular_price": money(v.get("compare_at_price")),
+                                            "available": bool(v.get("available")), "stock_text": None})
+                _finalize_variants(res)
+            results.append(res)
+        return results
+
+
 # --------------------------------------------------------------------------- shared
 
 def _finalize_variants(res: dict) -> None:
@@ -335,6 +402,25 @@ def _finalize_variants(res: dict) -> None:
         res["regular_price"] = None
 
 
+def _fingerprint(r) -> str:
+    """Short description of an unsupported site, to show which adapter it would need."""
+    if r is None:
+        return "homepage could not be loaded"
+    bits = [f"HTTP {r.status_code}"]
+    for h in ("server", "x-powered-by"):
+        if r.headers.get(h):
+            bits.append(f"{h}: {r.headers[h]}")
+    m = re.search(r'<meta[^>]+name=["\']generator["\'][^>]+content=["\']([^"\']+)', r.text, re.I)
+    if m:
+        bits.append(f"generator: {m.group(1)}")
+    low = r.text.lower()
+    for marker in ("__next_data__", "__next_f", "__nuxt", "wp-content", "laravel", "csrf-token",
+                   "zatiq", "bdshop", "shopify", "wix", "squarespace", "magento", "opencart", "react", "vue"):
+        if marker in low:
+            bits.append(marker)
+    return ", ".join(bits)
+
+
 def detect(base: str):
     """Figure out which adapter a shop needs (cached per process)."""
     key = ("detect", base)
@@ -348,15 +434,21 @@ def detect(base: str):
             shop = WooCommerceShop(base)
     except (requests.RequestException, ValueError):
         pass
+    home = None
     if shop is None:
         try:
-            r = _session.get(base, timeout=TIMEOUT)
-            if "__next_f" in r.text and "softs.ai" in r.text.lower():
+            home = _session.get(base, timeout=TIMEOUT)
+            low = home.text.lower()
+            if "__next_f" in home.text and "softs.ai" in low:
                 shop = SoftsShop(base)
+            elif "cdn.shopify.com" in low or "shopify.theme" in low:
+                shop = ShopifyShop(base)
         except requests.RequestException:
             pass
     if shop is None:
-        raise RuntimeError("Unsupported shop platform (not WooCommerce or Softs.ai)")
+        hint = _fingerprint(home)
+        print(f"[detect] unsupported shop {base}: {hint}", flush=True)
+        raise RuntimeError(f"Unsupported shop platform ({hint})")
     _cache.set(key, shop)
     return shop
 
